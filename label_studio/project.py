@@ -3,6 +3,8 @@ import io
 import logging
 import json
 import random
+import cv2
+import numpy as np
 
 from shutil import copy2
 from collections import defaultdict
@@ -391,6 +393,29 @@ class Project(object):
         filename = os.path.join(self.config['output_dir'], str(task_id) + '.json')
         os.mkdir(self.config['output_dir']) if not os.path.exists(self.config['output_dir']) else ()
         json.dump(task, open(filename, 'w'), indent=4, sort_keys=True)
+        # Save image
+        filename, root = task['data']['image'].split('?d=%2F')
+        root = '/' + root.replace('%2F', '/')
+        filename = os.path.split(filename)[-1]
+        filepath = os.path.join(root, filename)
+        objs = [[obj['value']['polygonlabels'][0], obj['value']['points']] for obj in task['completions'][0]['result']]
+        img = cv2.imread(filepath)
+        img_draw = np.zeros_like(img)
+        h, w, _ = img.shape
+
+        # draw and save image
+        save_dir = os.path.join(os.path.split(root)[0], 'image-finish')
+        save_filepath = os.path.join(save_dir, filename)
+        for obj in objs:
+            label, points = obj
+            points = (np.array([points]) / 100 * [w, h]).astype(np.int32)
+            img_draw = cv2.fillPoly(img_draw, points, [0, 0, 255])
+            ret, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.3, 1)
+            cv2.putText(img_draw, label, (points[0, :, 0].min(), points[0, :, 1].min() + baseline), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5, (0, 0, 255), 1)
+
+        img = cv2.addWeighted(img, 1, img_draw, 0.3, 0)
+        cv2.imwrite(save_filepath, img)
         return completion['id']
 
     def delete_completion(self, task_id):

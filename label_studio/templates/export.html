@@ -53,10 +53,18 @@
           <option value="{{ format }}">{{ format }}</option>
         {% endfor %}
       </select>
+
+      <br>
+      <br>
+      <div class="header">Do you want to save no object image:</div>
+      <select id="export-save-no-object-image" class="ui dropdown">
+          <option value="Yes">Yes</option>
+          <option value="No">No</option>
+      </select>
       <br>
       <br>
       <a class="ui button positive center"
-         onclick="downloadFile('/api/export?format=' + $('#export-format-dropdown').val())">
+         onclick="downloadFile('/api/export?format=' + $('#export-format-dropdown').val() + '&save_no_object_image=' + $('#export-save-no-object-image').val()) ">
         Export Completions</a>
       <br>
 

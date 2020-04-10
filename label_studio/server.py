@@ -454,6 +454,7 @@ def api_import():
 @app.route('/api/export', methods=['GET'])
 def api_export():
     export_format = request.args.get('format')
+    save_no_object_image = True if request.args.get('save_no_object_image') == 'Yes' else False
     project = project_get_or_create()
     now = datetime.now()
     completion_dir = project.config['output_dir']
@@ -464,7 +465,7 @@ def api_export():
     zip_dir = os.path.join(project_export_dir, now.strftime('%Y-%m-%d-%H-%M-%S'))
     os.makedirs(zip_dir, exist_ok=True)
 
-    project.converter.convert(completion_dir, zip_dir, format=export_format)
+    project.converter.convert(completion_dir, zip_dir, format=export_format, save_no_object_image=save_no_object_image)
     shutil.make_archive(zip_dir, 'zip', zip_dir)
     shutil.rmtree(zip_dir)
 

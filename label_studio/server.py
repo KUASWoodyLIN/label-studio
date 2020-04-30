@@ -466,11 +466,20 @@ def api_export():
     os.makedirs(zip_dir, exist_ok=True)
 
     project.converter.convert(completion_dir, zip_dir, format=export_format, save_no_object_image=save_no_object_image)
-    shutil.make_archive(zip_dir, 'zip', zip_dir)
-    shutil.rmtree(zip_dir)
+    # Save Zip
+    # shutil.make_archive(zip_dir, 'zip', zip_dir)
+    # shutil.rmtree(zip_dir)
+    # response = send_file(zip_dir+'.zip', as_attachment=True)
+    # response.headers['filename'] = os.path.basename(zip_dir+'.zip')
 
-    response = send_file(zip_dir+'.zip', as_attachment=True)
-    response.headers['filename'] = os.path.basename(zip_dir+'.zip')
+    # Save Json
+    src_json_file = os.path.join(zip_dir, 'result.json')
+    dst_json_file = os.path.join(os.path.split(zip_dir)[0], 'result.json')
+    shutil.copy(src_json_file, dst_json_file)
+    shutil.rmtree(zip_dir)
+    response = send_file(dst_json_file, as_attachment=True)
+    response.headers['filename'] = 'result.json'
+
     project.analytics.send(getframeinfo(currentframe()).function)
     return response
 
@@ -483,7 +492,7 @@ def api_generate_next_task():
     project = project_get_or_create()
     # try to find task is not presented in completions
     completed_tasks_ids = project.get_completions_ids()
-    task = project.next_task(completed_tasks_ids)
+    task = project.next_task(completed_tasks_ids)       # TODO: change the getting task rule
     if not task:
         # no tasks found
         project.analytics.send(getframeinfo(currentframe()).function, error=404)

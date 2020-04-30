@@ -393,7 +393,9 @@ class Project(object):
         filename = os.path.join(self.config['output_dir'], str(task_id) + '.json')
         os.mkdir(self.config['output_dir']) if not os.path.exists(self.config['output_dir']) else ()
         json.dump(task, open(filename, 'w'), indent=4, sort_keys=True)
-        # Save image
+
+        # -------------------------  Save Labeling images  ------------------------- #
+        # Read Image
         filename, root = task['data']['image'].split('?d=%2F')
         root = '/' + root.replace('%2F', '/')
         filename = os.path.split(filename)[-1]

@@ -422,15 +422,18 @@ class Project(object):
         # draw and save image
         save_dir = os.path.join(os.path.split(root)[0], 'image-finish')
         save_filepath = os.path.join(save_dir, filename)
-        for obj in objs:
-            label, points = obj
-            points = (np.array([points]) / 100 * [w, h]).astype(np.int32)
-            img_draw = cv2.fillPoly(img_draw, points, [0, 0, 255])
-            ret, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.3, 1)
-            cv2.putText(img_draw, label, (points[0, :, 0].min(), points[0, :, 1].min() + baseline), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5, (0, 0, 255), 1)
-
-        img = cv2.addWeighted(img, 1, img_draw, 0.3, 0)
+        if len(objs) > 0:
+            for obj in objs:
+                label, points = obj
+                points = (np.array([points]) / 100 * [w, h]).astype(np.int32)
+                img_draw = cv2.fillPoly(img_draw, points, [0, 0, 255])
+                ret, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.3, 1)
+                cv2.putText(img_draw, label, (points[0, :, 0].min(), points[0, :, 1].min() + baseline), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5, (0, 0, 255), 1)
+                img = cv2.addWeighted(img, 1, img_draw, 0.5, 0)
+        else:
+            cv2.putText(img_draw, 'No defect', (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            img = cv2.addWeighted(img, 1, img_draw, 0.7, 0)
         cv2.imwrite(save_filepath, img)
         return completion['id']
 

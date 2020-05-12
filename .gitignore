@@ -49,3 +49,5 @@ build/static/media/config.*.xml
 label_studio.egg-info/
 my_project/
 label-studio-projects
+
+label_studio/static/spindle/*/*.bmp

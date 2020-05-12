@@ -25,6 +25,8 @@ from inspect import currentframe, getframeinfo
 from flask import request, jsonify, make_response, Response, Response as HttpResponse, send_file, session, redirect
 from flask_api import status
 
+from label_studio.utils.statistics import pie_area2classes, pie_classes2area, draw_defect_heatmap
+
 from label_studio.utils.functions import generate_sample_task
 from label_studio.utils.io import find_dir, find_file, find_editor_files
 from label_studio.utils import uploader
@@ -255,6 +257,45 @@ def model_page():
     )
 
 
+@app.route('/area2classes')
+def area2classes_page():
+    project = project_get_or_create()
+    project.analytics.send(getframeinfo(currentframe()).function)
+    html_str = pie_area2classes(project.get_area_class_number())
+    return flask.render_template(
+        'area2classes.html',
+        content=html_str,
+        config=project.config,
+    )
+
+
+@app.route('/classes2area')
+def classes2area_page():
+    project = project_get_or_create()
+    project.analytics.send(getframeinfo(currentframe()).function)
+    html_str = pie_classes2area(project.get_class_area_number())
+    return flask.render_template(
+        'classes2area.html',
+        content=html_str,
+        config=project.config,
+    )
+
+
+@app.route('/heatmap')
+def heatmap_page():
+    project = project_get_or_create()
+    project.analytics.send(getframeinfo(currentframe()).function)
+    area_cols, area_rows = project.get_area_set()
+    area_points_dict = project.get_object_points()
+    draw_defect_heatmap(area_points_dict, app.static_folder)
+    return flask.render_template(
+        'heatmap.html',
+        config=project.config,
+        area_cols=area_cols,
+        area_rows=area_rows
+    )
+
+
 @app.route('/api/render-label-studio', methods=['GET', 'POST'])
 def api_render_label_studio():
     """ Label studio frontend rendering for iframe
@@ -429,7 +470,7 @@ def api_import():
     # tasks are all in one file, append it
     path = project.config['input_path']
     old_tasks = json.load(open(path))
-    max_id_in_old_tasks = int(max(old_tasks.keys())) if old_tasks else -1
+    max_id_in_old_tasks = max([int(key) for key in old_tasks.keys()]) if old_tasks else -1
     new_tasks = Tasks().from_list_of_dicts(new_tasks, max_id_in_old_tasks + 1)
     old_tasks.update(new_tasks)
 

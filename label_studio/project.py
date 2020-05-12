@@ -5,6 +5,7 @@ import json
 import random
 import cv2
 import numpy as np
+from PIL import Image, ImageFont, ImageDraw
 
 from shutil import copy2
 from collections import defaultdict
@@ -42,10 +43,12 @@ class Project(object):
 
         self.tasks = None
         self.label_config_line, self.label_config_full, self.input_data_tags = None, None, None
+        self.labeling_classes = None
         self.derived_input_schema, self.derived_output_schema = None, None
         self.load_tasks()
         self.load_label_config()
         self.load_derived_schemas()
+        self.load_labeling_classes()
 
         self.analytics = None
         self.load_analytics()
@@ -112,6 +115,11 @@ class Project(object):
 
     def load_converter(self):
         self.converter = Converter(self.label_config_full)
+
+    def load_labeling_classes(self):
+        tree = ElementTree.parse(self.config['label_config'])
+        root = tree.getroot()
+        self.labeling_classes = [i.attrib['value'] for i in root.iter('Label')]
 
     @property
     def id(self):
@@ -373,6 +381,60 @@ class Project(object):
             data = None
         return data
 
+    def get_area_set(self):
+        area_set = set()
+        number_set = set()
+        area_set.add('ALL')
+        number_set.add('ALL')
+        for task_id in self.get_task_ids():
+            task_with_completions = self.get_task_with_completions(task_id)
+            if task_with_completions and 'completions' in task_with_completions:
+                area, num = task_with_completions['data']['area'].split()[-1].split('_')
+                area_set.add(area)   # show col
+                number_set.add(num)
+        return list(area_set), list(number_set)
+
+    def get_object_points(self):
+        area_points_dict = defaultdict(list)
+        for task_id in self.get_task_ids():
+            task_with_completions = self.get_task_with_completions(task_id)
+            if task_with_completions and 'completions' in task_with_completions:
+                completions = task_with_completions['completions']
+                area_key = task_with_completions['data']['area'].split()[-1]
+                for completion in completions:
+                    for result in completion['result']:
+                        points = result['value']['points']
+                        area_points_dict[area_key].append(points)
+        return area_points_dict
+
+    def get_area_class_number(self):
+        area_dict = {}
+        for task_id in self.get_task_ids():
+            task_with_completions = self.get_task_with_completions(task_id)
+            if task_with_completions and 'completions' in task_with_completions:
+                completions = task_with_completions['completions']
+                area_key = task_with_completions['data']['area'].split()[-1]
+                class_defect_number = area_dict.get(area_key, {c: 0 for c in self.labeling_classes})
+                for completion in completions:
+                    for result in completion['result']:
+                        class_defect_number[result['value']['polygonlabels'][0]] += 1
+                area_dict[area_key] = class_defect_number
+        return area_dict
+
+    def get_class_area_number(self):
+        class_defect_dict = {c: {} for c in self.labeling_classes}
+        for task_id in self.get_task_ids():
+            task_with_completions = self.get_task_with_completions(task_id)
+            if task_with_completions and 'completions' in task_with_completions:
+                completions = task_with_completions['completions']
+                area_key = task_with_completions['data']['area'].split()[-1]
+                for completion in completions:
+                    for result in completion['result']:
+                        c = result['value']['polygonlabels'][0]
+                        class_defect_dict[c][area_key] = class_defect_dict[c].get(area_key, 0) + 1
+                        class_defect_dict[c]['total'] = class_defect_dict[c].get('total', 0) + 1
+        return class_defect_dict
+
     def save_completion(self, task_id, completion):
         """ Save completion
 
@@ -427,10 +489,9 @@ class Project(object):
                 label, points = obj
                 points = (np.array([points]) / 100 * [w, h]).astype(np.int32)
                 img_draw = cv2.fillPoly(img_draw, points, [0, 0, 255])
-                ret, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.3, 1)
-                cv2.putText(img_draw, label, (points[0, :, 0].min(), points[0, :, 1].min() + baseline), cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5, (0, 0, 255), 1)
-                img = cv2.addWeighted(img, 1, img_draw, 0.5, 0)
+                img_draw = self.print_chinese_opencv(img_draw, label, (points[0, :, 0].min(), points[0, :, 1].min()),
+                                                     (0, 0, 255))
+                img = cv2.addWeighted(img, 1, img_draw, 0.7, 0)
         else:
             cv2.putText(img_draw, 'No defect', (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
             img = cv2.addWeighted(img, 1, img_draw, 0.7, 0)
@@ -453,6 +514,17 @@ class Project(object):
         for f in self.iter_completions():
             completions.append(json_load(f))
         self.ml_backend.train(completions, self)
+
+    @classmethod
+    def print_chinese_opencv(cls, im, chinese, pos, color):
+        img_PIL = Image.fromarray(cv2.cvtColor(im, cv2.COLOR_BGR2RGB))
+        font = ImageFont.truetype('NotoSansCJK-Bold.ttc', 12)
+        fillColor = color[::-1]
+        position = (pos[0], pos[1]-12)
+        draw = ImageDraw.Draw(img_PIL)
+        draw.text(position, chinese, font=font, fill=fillColor)
+        img = cv2.cvtColor(np.asarray(img_PIL), cv2.COLOR_RGB2BGR)
+        return img
 
     @classmethod
     def get_project_dir(cls, project_name, args):
@@ -574,6 +646,18 @@ class Project(object):
             print(completions_dir + ' output dir has been created.')
         config['output_dir'] = 'completions'
 
+        # create images template dir
+        images_template_dir = os.path.join(dir, 'images_template')
+        if os.path.exists(images_template_dir) and not args.force:
+            already_exists_error('images template', images_template_dir)
+        if os.path.exists(images_template_dir):
+            delete_dir_content(images_template_dir)
+            print(images_template_dir + ' output dir already exists. Clear it.')
+        else:
+            os.makedirs(images_template_dir, exist_ok=True)
+            print(images_template_dir + ' output dir has been created.')
+        config['images_template_dir'] = 'images_template'
+
         if args.ml_backend_url:
             if 'ml_backend' not in config or not isinstance(config['ml_backend'], dict):
                 config['ml_backend'] = {}
@@ -629,6 +713,7 @@ class Project(object):
         config['input_path'] = os.path.join(os.path.dirname(config_path), config['input_path'])
         config['label_config'] = os.path.join(os.path.dirname(config_path), config['label_config'])
         config['output_dir'] = os.path.join(os.path.dirname(config_path), config['output_dir'])
+        config['images_template_dir'] = os.path.join(os.path.dirname(config_path), config['images_template_dir'])
         return config
 
     @classmethod

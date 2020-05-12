@@ -1,0 +1,34 @@
+{% extends 'base.html' %}
+{% block body %}
+<center>
+  <h3 style="display: inline;">Choose export format:&nbsp;&nbsp;</h3>
+  <select id="area-cols" class="ui dropdown">
+    {% for area in area_cols %}
+      <option value="{{ area }}">{{ area }}</option>
+    {% endfor %}
+  </select>
+  <select id="area-rows" class="ui dropdown">
+    {% for area in area_rows %}
+      <option value="{{ area }}">{{ area }}</option>
+    {% endfor %}
+  </select>
+  &nbsp;&nbsp;
+  <a class="ui button positive">Submit</a>
+  <p>
+  <div>
+    <input type="text" name="user" id="text-show">
+  </div>
+  <div>
+    <img class="Image" src="" id="img-show">
+  </div>
+</center>
+
+<script>
+$(document).ready(function(){
+	$("a").click(function(){
+		$("#img-show").attr('src',"spindle/output/output_" + $("#area-cols").val() + '_' + $("#area-rows").val() + '.bmp');
+		$("#text-show:text").val("spindle/output/output_" + $("#area-cols").val() + '_' + $("#area-rows").val() + '.bmp');
+	});
+});
+</script>
+{% endblock %}

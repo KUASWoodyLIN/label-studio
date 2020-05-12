@@ -5,12 +5,12 @@
  */
 
 const API_URL = {
-  MAIN: "/api",
+  MAIN: "api",
   TASKS: "/tasks",
   COMPLETIONS: "/completions",
   CANCEL: "/cancel",
   PROJECTS: "/projects",
-  NEXT: "/next",
+  NEXT: "/next/",
   EXPERT_INSRUCTIONS: "/expert_instruction",
 };
 
@@ -154,7 +154,7 @@ const _convertTask = function(task) {
     for (let tp of task.predictions) {
       tp.pk = tp.pk;
       tp.createdAgo = tp.created_ago;
-      tp.createdBy = tp.model_version;
+      tp.createdBy = tp.created_by;
     }
   }
 
@@ -228,7 +228,7 @@ const LSB = function(elid, config, task) {
     onDeleteCompletion: function(ls, completion) {
       ls.setFlags({ isLoading: true });
 
-      const req = Requests.remover("/api/tasks/" + ls.task.id + "/completions/" + completion.pk + "/");
+      const req = Requests.remover(`${API_URL.MAIN}${API_URL.TASKS}/${ls.task.id}${API_URL.COMPLETIONS}/${completion.pk}/`);
       req.then(function(httpres) {
         ls.setFlags({ isLoading: false });
       });
@@ -269,7 +269,7 @@ const LSB = function(elid, config, task) {
         ls.setFlags({ isLoading: true });
         loadNext(ls);
       } else {
-          if (ls.completionStore.completions.length === 0) {
+          if (! task || ! task.completions || task.completions.length === 0) {
               var c = ls.completionStore.addCompletion({ userGenerate: true });
               ls.completionStore.selectCompletion(c.id);
           }

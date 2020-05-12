@@ -59,25 +59,22 @@ def parse_input_args():
         '-o', '--output-dir', dest='output_dir', type=valid_filepath,
         help='Output directory for completions')
     root_parser.add_argument(
-        '--ml-backend-url', dest='ml_backend_url',
-        help='Machine learning backend URL')
+        '--ml-backends', dest='ml_backends', nargs='+',
+        help='Machine learning backends URLs')
     root_parser.add_argument(
-        '--ml-backend-name', dest='ml_backend_name',
-        help='Machine learning backend name')
-    root_parser.add_argument(
-        '--sampling', dest='sampling', choices=['sequential', 'uniform'], default='uniform',
+        '--sampling', dest='sampling', choices=['sequential', 'uniform'], default='sequential',
         help='Sampling type that defines tasks order'
     )
-    root_parser.add_argument(
-        '--host', dest='host', default='0.0.0.0', type=str,
-        help='Server port')
-    root_parser.add_argument(
-        '-p', '--port', dest='port', default=8080, type=int,
-        help='Server port')
     root_parser.add_argument(
         '--log-level', dest='log_level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], default=None,
         help='Logging level'
     )
+    root_parser.add_argument(
+        '--host', dest='host', type=str,
+        help='Server port')
+    root_parser.add_argument(
+        '-p', '--port', dest='port', type=int,
+        help='Server port')
 
     parser = argparse.ArgumentParser(description='Label studio')
 

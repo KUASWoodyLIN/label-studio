@@ -20,10 +20,10 @@ with io.open(os.path.join(os.path.dirname(__file__), 'logger.json')) as f:
 from uuid import uuid4
 from urllib.parse import unquote
 from datetime import datetime
-from copy import deepcopy
 from inspect import currentframe, getframeinfo
 from flask import request, jsonify, make_response, Response, Response as HttpResponse, send_file, session, redirect
 from flask_api import status
+from types import SimpleNamespace
 
 from label_studio.utils.statistics import pie_area2classes, pie_classes2area, draw_defect_heatmap
 
@@ -42,11 +42,18 @@ from label_studio.tasks import Tasks
 logger = logging.getLogger(__name__)
 
 app = flask.Flask(__name__, static_url_path='')
+
 app.secret_key = 'A0Zrdqwf1AQWj12ajkhgFN]dddd/,?RfDWQQT'
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
 # input arguments
 input_args = None
+if os.path.exists('server.json'):
+    try:
+        with open('server.json') as f:
+            input_args = SimpleNamespace(**json.load(f))
+    except:
+        pass
 
 
 def project_get_or_create(multi_session_force_recreate=False):
@@ -141,10 +148,8 @@ def labeling_page():
 
     if task_id is not None:
         task_data = project.get_task_with_completions(task_id) or project.get_task(task_id)
-        if project.ml_backend:
-            task_data = deepcopy(task_data)
-            task_data['predictions'] = project.ml_backend.make_predictions(task_data, project.project_obj)
-
+        if project.ml_backends_connected:
+            task_data = project.make_predictions(task_data)
     project.analytics.send(getframeinfo(currentframe()).function)
     return flask.render_template(
         'labeling.html',
@@ -250,10 +255,26 @@ def model_page():
     """ Machine learning"""
     project = project_get_or_create()
     project.analytics.send(getframeinfo(currentframe()).function)
+    ml_backends = []
+    for ml_backend in project.ml_backends:
+        if ml_backend.connected:
+            try:
+                ml_backend.sync(project)
+                training_status = ml_backend.is_training(project)
+                ml_backend.training_in_progress = training_status['is_training']
+                ml_backend.model_version = training_status['model_version']
+                ml_backend.is_connected = True
+            except Exception as exc:
+                logger.error(str(exc), exc_info=True)
+                ml_backend.is_error = True
+        else:
+            ml_backend.is_connected = False
+        ml_backends.append(ml_backend)
     return flask.render_template(
         'model.html',
         config=project.config,
-        project=project
+        project=project,
+        ml_backends=ml_backends
     )
 
 
@@ -446,6 +467,7 @@ def api_import_example_file():
 
 
 @app.route('/api/import', methods=['POST'])
+@exception_treatment
 def api_import():
     project = project_get_or_create()
 
@@ -539,21 +561,24 @@ def api_generate_next_task():
         return make_response('', 404)
 
     project.analytics.send(getframeinfo(currentframe()).function)
-    # try to use ml backend for predictions
-    if project.ml_backend:
-        task = deepcopy(task)
-        task['predictions'] = project.ml_backend.make_predictions(task, project)
+
+    # collect prediction from multiple ml backends
+    if project.ml_backends_connected:
+        task = project.make_predictions(task)
+
     return make_response(jsonify(task), 200)
 
 
-@app.route('/api/project/', methods=['POST', 'GET'])
+@app.route('/api/project/', methods=['POST', 'GET', 'PATCH'])
 @exception_treatment
 def api_project():
-    """ Project global operation
-    """
+    """ Project global operation"""
     project = project_get_or_create(multi_session_force_recreate=False)
     if request.method == 'POST' and request.args.get('new', False):
         project = project_get_or_create(multi_session_force_recreate=True)
+    elif request.method == 'PATCH':
+        project.update_params(request.json)
+    project.analytics.send(getframeinfo(currentframe()).function, method=request.method)
     return make_response(jsonify({'project_name': project.name}), 201)
 
 
@@ -681,17 +706,27 @@ def api_instruction():
     return make_response(project.config['instruction'], 200)
 
 
+@app.route('/api/remove-ml-backend', methods=['POST'])
+@exception_treatment
+def api_remove_ml_backend():
+    project = project_get_or_create()
+    ml_backend_name = request.json['name']
+    project.remove_ml_backend(ml_backend_name)
+    project.analytics.send(getframeinfo(currentframe()).function)
+    return make_response(jsonify('Deleted!'), 204)
+
+
 @app.route('/predict', methods=['POST'])
 @exception_treatment
 def api_predict():
-    """ Make ML prediction using ml_backend
+    """ Make ML prediction using ml_backends
     """
-    task = request.json
+    task = {'data': request.json}
     project = project_get_or_create()
-    if project.ml_backend:
-        predictions = project.ml_backend.make_predictions({'data': task}, project.project_obj)
+    if project.ml_backends_connected:
+        task_with_predictions = project.make_predictions(task)
         project.analytics.send(getframeinfo(currentframe()).function)
-        return make_response(jsonify(predictions), 200)
+        return make_response(jsonify(task_with_predictions), 200)
     else:
         project.analytics.send(getframeinfo(currentframe()).function, error=400)
         return make_response(jsonify("No ML backend"), 400)
@@ -702,10 +737,17 @@ def api_predict():
 def api_train():
     """Send train signal to ML backend"""
     project = project_get_or_create()
-    if project.ml_backend:
-        project.train()
-        project.analytics.send(getframeinfo(currentframe()).function)
-        return make_response(jsonify({'details': 'Train started'}), 200)
+    if project.ml_backends_connected:
+        training_started = project.train()
+        if training_started:
+            logger.debug('Training started.')
+            project.analytics.send(getframeinfo(currentframe()).function, num_backends=len(project.ml_backends))
+            return make_response(jsonify({'details': 'Training started'}), 200)
+        else:
+            logger.debug('Training failed.')
+            project.analytics.send(getframeinfo(currentframe()).function, error=400, training_started=training_started)
+            return make_response(
+                jsonify('Training is not started: seems that you don\'t have any ML backend connected'), 400)
     else:
         project.analytics.send(getframeinfo(currentframe()).function, error=400)
         return make_response(jsonify("No ML backend"), 400)
@@ -724,7 +766,8 @@ def str2datetime(timestamp_str):
         ts = int(timestamp_str)
     except:
         return timestamp_str
-    return datetime.utcfromtimestamp(ts).strftime('%Y%m%d.%H%M%S')
+    # return datetime.utcfromtimestamp(ts).strftime('%Y%m%d.%H%M%S')
+    return datetime.utcfromtimestamp(ts).strftime('%c')
 
 
 def main():
@@ -740,9 +783,6 @@ def main():
     # setup logging level
     if input_args.log_level:
         logging.root.setLevel(input_args.log_level)
-
-    import label_studio.utils.functions
-    label_studio.utils.functions.HOSTNAME = 'http://localhost:' + str(input_args.port)
 
     # On `init` command, create directory args.project_name with initial project state and exit
     if input_args.command == 'init':
@@ -763,20 +803,24 @@ def main():
 
     # On `start` command, launch browser if --no-browser is not specified and start label studio server
     if input_args.command == 'start':
+        import label_studio.utils.functions
+
+        config = Project.get_config(input_args.project_name, input_args)
+        host = input_args.host or config.get('host', 'localhost')
+        port = input_args.port or config.get('port', 8080)
+
+        label_studio.utils.functions.HOSTNAME = 'http://localhost:' + str(port)
+
         if not input_args.no_browser:
             browser_url = label_studio.utils.functions.HOSTNAME + '/welcome'
             threading.Timer(2.5, lambda: webbrowser.open(browser_url)).start()
             print('Start browser at URL: ' + browser_url)
 
-        app.run(
-            host=input_args.host, port=input_args.port, debug=input_args.debug
-        )
+        app.run(host=host, port=port, debug=input_args.debug)
 
     # On `start-multi-session` command, server creates one project per each browser sessions
     elif input_args.command == 'start-multi-session':
-        app.run(
-            host=input_args.host, port=input_args.port, debug=input_args.debug
-        )
+        app.run(host=input_args.host, port=input_args.port, debug=input_args.debug)
 
 
 if __name__ == "__main__":

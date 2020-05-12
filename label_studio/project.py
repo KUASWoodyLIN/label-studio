@@ -13,6 +13,7 @@ from datetime import datetime
 from operator import itemgetter
 from xml.etree import ElementTree
 from uuid import uuid4
+from copy import deepcopy
 
 from label_studio_converter import Converter
 
@@ -21,6 +22,7 @@ from label_studio.utils.analytics import Analytics
 from label_studio.utils.models import ProjectObj, MLBackend
 from label_studio.utils.exceptions import ValidationError
 from label_studio.utils.io import find_file, delete_dir_content, json_load
+from label_studio.utils.validation import is_url
 from label_studio.tasks import Tasks
 
 logger = logging.getLogger(__name__)
@@ -42,9 +44,10 @@ class Project(object):
         self.context = context or {}
 
         self.tasks = None
-        self.label_config_line, self.label_config_full, self.input_data_tags = None, None, None
         self.labeling_classes = None
+        self.label_config_line, self.label_config_full, self.parsed_label_config, self.input_data_tags = None, None, None, None  # noqa
         self.derived_input_schema, self.derived_output_schema = None, None
+
         self.load_tasks()
         self.load_label_config()
         self.load_derived_schemas()
@@ -53,7 +56,8 @@ class Project(object):
         self.analytics = None
         self.load_analytics()
 
-        self.project_obj, self.ml_backend = None, None
+        self.project_obj = None
+        self.ml_backends = []
         self.load_project_ml_backend()
 
         self.converter = None
@@ -79,6 +83,7 @@ class Project(object):
     def load_label_config(self):
         self.label_config_full = config_comments_free(open(self.config['label_config']).read())
         self.label_config_line = config_line_stripped(self.label_config_full)
+        self.parsed_label_config = parse_config(self.label_config_line)
         self.input_data_tags = self.get_input_data_tags(self.label_config_line)
 
     def load_derived_schemas(self):
@@ -103,18 +108,39 @@ class Project(object):
         collect_analytics = bool(collect_analytics)
         self.analytics = Analytics(self.label_config_line, collect_analytics, self.name, self.context)
 
+    def add_ml_backend(self, params, raise_on_error=True):
+        ml_backend = MLBackend.from_params(params)
+        if not ml_backend.connected and raise_on_error:
+            raise ValueError('ML backend with URL: "' + str(params['url']) + '" is not connected.')
+        self.ml_backends.append(ml_backend)
+
+    def remove_ml_backend(self, name):
+        # remove from memory
+        remove_idx = next((i for i, b in enumerate(self.ml_backends) if b.model_name == name), None)
+        if remove_idx is None:
+            raise KeyError('Can\'t remove ML backend with name "' + name + '": not found.')
+        self.ml_backends.pop(remove_idx)
+
+        # remove from config
+        config_params = self.config.get('ml_backends', [])
+        remove_idx = next((i for i, b in enumerate(config_params) if b['name'] == name), None)
+        if remove_idx is not None:
+            config_params.pop(remove_idx)
+        self.config['ml_backends'] = config_params
+        self._save_config()
+
     def load_project_ml_backend(self):
         # configure project
         self.project_obj = ProjectObj(label_config=self.label_config_line, label_config_full=self.label_config_full)
-        # configure machine learning backend
-        ml_backend_params = self.config.get('ml_backend')
-        if ml_backend_params:
-            self.ml_backend = MLBackend.from_params(ml_backend_params)
-            if not self.ml_backend.connected:
-                raise ValueError('ML backend is not connected.')
+
+        # configure multiple machine learning backends
+        self.ml_backends = []
+        ml_backends_params = self.config.get('ml_backends', [])
+        for ml_backend_params in ml_backends_params:
+            self.add_ml_backend(ml_backend_params, raise_on_error=False)
 
     def load_converter(self):
-        self.converter = Converter(self.label_config_full)
+        self.converter = Converter(self.parsed_label_config)
 
     def load_labeling_classes(self):
         tree = ElementTree.parse(self.config['label_config'])
@@ -134,8 +160,8 @@ class Project(object):
         return self.project_obj.label_config
 
     @property
-    def ml_backend_connected(self):
-        return self.ml_backend is not None
+    def ml_backends_connected(self):
+        return len(self.ml_backends) > 0
 
     @property
     def task_data_login(self):
@@ -149,12 +175,28 @@ class Project(object):
         return self.project_obj.extract_data_types(config)
 
     def validate_label_config(self, config_string):
+        logger.debug('Validate label config')
         self.project_obj.validate_label_config(config_string)
 
+        logger.debug('Get parsed config')
         parsed_config = parse_config(config_string)
 
+        logger.debug('Validate label config on derived input schema')
         self.validate_label_config_on_derived_input_schema(parsed_config)
+
+        logger.debug('Validate label config on derived output schema')
         self.validate_label_config_on_derived_output_schema(parsed_config)
+
+    def _save_config(self):
+        with io.open(self.config['config_path'], mode='w') as f:
+            json.dump(self.config, f, indent=2)
+
+    def update_params(self, params):
+        if 'ml_backend' in params:
+            ml_backend_params = self._create_ml_backend_params(params['ml_backend'])
+            self.add_ml_backend(ml_backend_params)
+            self.config['ml_backends'].append(ml_backend_params)
+            self._save_config()
 
     def update_label_config(self, new_label_config):
         label_config_file = self.config['label_config']
@@ -184,7 +226,7 @@ class Project(object):
         """
         for result in completion['result']:
             result_type = result.get('type')
-            if result_type == 'relation':
+            if result_type in ('relation', 'rating', 'pairwise'):
                 continue
             if 'from_name' not in result or 'to_name' not in result:
                 logger.error('Unexpected completion.result format: "from_name" or "to_name" not found in %r' % result)
@@ -283,8 +325,9 @@ class Project(object):
                 json.dump({}, f)
 
         # delete everything on ML backend
-        if self.ml_backend:
-            self.ml_backend.clear(self)
+        if self.ml_backends_connected:
+            for m in self.ml_backends:
+                m.clear(self)
 
         # reload everything related to tasks
         self.load_tasks()
@@ -463,7 +506,11 @@ class Project(object):
             completion['id'] = task['id'] * 1000 + len(task['completions']) + 1
             task['completions'].append(completion)
 
-        self._update_derived_output_schema(completion)
+        try:
+            self._update_derived_output_schema(completion)
+        except Exception as exc:
+            logger.error(exc, exc_info=True)
+            logger.debug(json.dumps(completion, indent=2))
 
         # write task + completions to file
         filename = os.path.join(self.config['output_dir'], str(task_id) + '.json')
@@ -509,11 +556,31 @@ class Project(object):
         self.load_tasks()
         self.load_derived_schemas()
 
+    def make_predictions(self, task):
+        task = deepcopy(task)
+        task['predictions'] = []
+        try:
+            for ml_backend in self.ml_backends:
+                if not ml_backend.connected:
+                    continue
+                predictions = ml_backend.make_predictions(task, self)
+                predictions['created_by'] = ml_backend.model_name
+                task['predictions'].append(predictions)
+        except Exception as exc:
+            logger.debug(exc)
+        return task
+
     def train(self):
         completions = []
         for f in self.iter_completions():
             completions.append(json_load(f))
-        self.ml_backend.train(completions, self)
+        train_status = False
+        if self.ml_backends_connected:
+            for ml_backend in self.ml_backends:
+                if ml_backend.connected:
+                    ml_backend.train(completions, self)
+                    train_status = True
+        return train_status
 
     @classmethod
     def print_chinese_opencv(cls, im, chinese, pos, color):
@@ -572,6 +639,16 @@ class Project(object):
         if args.input_format == 'audio-dir':
             return task_loader.from_dir_with_audio_files(input_path, data_key)
         raise RuntimeError('Can\'t load tasks for input format={}'.format(args.input_format))
+
+    @classmethod
+    def _create_ml_backend_params(cls, url):
+        if '=http' in url:
+            name, url = url.split('=', 1)
+        else:
+            name = str(uuid4())[:8]
+        if not is_url(url):
+            raise ValueError('Specified string "' + url + '" doesn\'t look like URL.')
+        return {'url': url, 'name': name}
 
     @classmethod
     def create_project_dir(cls, project_name, args):
@@ -646,28 +723,17 @@ class Project(object):
             print(completions_dir + ' output dir has been created.')
         config['output_dir'] = 'completions'
 
-        # create images template dir
-        images_template_dir = os.path.join(dir, 'images_template')
-        if os.path.exists(images_template_dir) and not args.force:
-            already_exists_error('images template', images_template_dir)
-        if os.path.exists(images_template_dir):
-            delete_dir_content(images_template_dir)
-            print(images_template_dir + ' output dir already exists. Clear it.')
-        else:
-            os.makedirs(images_template_dir, exist_ok=True)
-            print(images_template_dir + ' output dir has been created.')
-        config['images_template_dir'] = 'images_template'
-
-        if args.ml_backend_url:
-            if 'ml_backend' not in config or not isinstance(config['ml_backend'], dict):
-                config['ml_backend'] = {}
-            config['ml_backend']['url'] = args.ml_backend_url
-            if args.ml_backend_name:
-                config['ml_backend']['name'] = args.ml_backend_name
-            else:
-                config['ml_backend']['name'] = str(uuid4())
-
-        config['sampling'] = args.sampling
+        if 'ml_backends' not in config or not isinstance(config['ml_backends'], list):
+            config['ml_backends'] = []
+        if args.ml_backends:
+            for url in args.ml_backends:
+                config['ml_backends'].append(cls._create_ml_backend_params(url))
+        if args.sampling:
+            config['sampling'] = args.sampling
+        if args.port:
+            config['port'] = args.port
+        if args.host:
+            config['host'] = args.host
 
         # create config.json
         config_json = 'config.json'
@@ -683,7 +749,11 @@ class Project(object):
         return dir
 
     @classmethod
-    def _get_config(cls, project_dir, args):
+    def get_config(cls, project_name, args):
+        return cls._get_config(cls.get_project_dir(project_name, args))
+
+    @classmethod
+    def _get_config(cls, project_dir, args=None):
         """
         Get config from input args Namespace acquired by Argparser
         :param args:
@@ -691,18 +761,20 @@ class Project(object):
         """
         # check if project directory exists
         if not os.path.exists(project_dir):
+            project_name = args.project_name if args is not None else '<project_name>'
             raise FileNotFoundError(
                 'Couldn\'t find directory ' + project_dir +
                 ', maybe you\'ve missed appending "--init" option:\nlabel-studio start ' +
-                args.project_name + ' --init'
+                project_name + ' --init'
             )
 
         # check config.json exists in directory
         config_path = os.path.join(project_dir, 'config.json')
         if not os.path.exists(config_path):
+            project_name = args.project_name if args is not None else '<project_name>'
             raise FileNotFoundError(
                 'Couldn\'t find config file ' + config_path + ' in project directory ' + project_dir +
-                ', maybe you\'ve missed appending "--init" option:\nlabel-studio start ' + args.project_name + ' --init'
+                ', maybe you\'ve missed appending "--init" option:\nlabel-studio start ' + project_name + ' --init'
             )
 
         config_path = os.path.abspath(config_path)
@@ -713,7 +785,6 @@ class Project(object):
         config['input_path'] = os.path.join(os.path.dirname(config_path), config['input_path'])
         config['label_config'] = os.path.join(os.path.dirname(config_path), config['label_config'])
         config['output_dir'] = os.path.join(os.path.dirname(config_path), config['output_dir'])
-        config['images_template_dir'] = os.path.join(os.path.dirname(config_path), config['images_template_dir'])
         return config
 
     @classmethod

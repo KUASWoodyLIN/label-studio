@@ -4,7 +4,9 @@
 
 <br/>
 
- **Label Studio is a swiss army knife of data labeling and annotation tools :v:**
+> **NEW** Release 0.6.0: Nested & Per-Region Labeling, Filtering & Cueing the active labels, read the [release notes](https://labelstud.io/blog/release-060-nested-data-labeling.html).
+
+**Label Studio is a swiss army knife of data labeling and annotation tools :v:**
  
 Try it now in a **[running app](https://app.labelstud.io)** and check out the **[introductory post](https://towardsdatascience.com/introducing-label-studio-a-swiss-army-knife-of-data-labeling-140c1be92881#3907-fd502dc24c8d)**.
  
@@ -73,7 +75,7 @@ python label-studio/server.py start labeling_project --init
 ## Run docker
 You can also start serving at `http://localhost:8080` by using docker:
 ```bash
-docker run --rm -p 8080:8080 -v `pwd`/my_project:/label-studio/my_project --name label-studio heartexlabs/label-studio:latest label-studio start my_project --init
+docker run --rm -p 8080:8080 -v `pwd`/my_project:/label-studio/my_project --name label-studio heartexlabs/label-studio:latest label-studio start my_project --init --host 0.0.0.0
 ```
 
 By default, it starts blank project in `./my_project` directory.
@@ -83,7 +85,7 @@ By default, it starts blank project in `./my_project` directory.
 You can override the default startup command by appending:
 
 ```bash
-docker run -p 8080:8080 -v `pwd`/my_project:/label-studio/my_project --name label-studio heartexlabs/label-studio:latest label-studio start my_project --init --force --template image_mixedlabel
+docker run -p 8080:8080 -v `pwd`/my_project:/label-studio/my_project --name label-studio heartexlabs/label-studio:latest label-studio start my_project --init --force --template image_mixedlabel --host 0.0.0.0
 ```
 
 If you want to build a local image, run:
